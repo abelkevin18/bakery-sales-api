@@ -1,7 +1,8 @@
 # Etapa 1: build
 FROM maven:3.9-eclipse-temurin-25 AS build
 WORKDIR /app
-COPY src/main/java .
+COPY pom.xml .
+COPY src ./src
 RUN mvn clean package -DskipTests
 
 # Etapa 2: runtime (slim)
