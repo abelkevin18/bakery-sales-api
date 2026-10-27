@@ -1,6 +1,12 @@
 spring:
   application:
     name: bakery-sales-api
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          jwk-set-uri: ${SUPABASE_JWKS_URL}
+          issuer-uri: ${SUPABASE_URL}/auth/v1
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:invoice_automation_service}
     username: ${DB_USER:postgres}
@@ -9,8 +15,14 @@ spring:
     open-in-view: false
     hibernate:
       ddl-auto: validate
+app:
+  supabase:
+    url: ${SUPABASE_URL}
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health
+  endpoint:
+    health:
+      show-details: never
