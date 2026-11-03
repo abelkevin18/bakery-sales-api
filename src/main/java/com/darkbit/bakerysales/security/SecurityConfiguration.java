@@ -45,7 +45,7 @@ public class SecurityConfiguration {
 					"/api/v1/products", "/api/v1/products/**",
 					"/api/v1/categories", "/api/v1/categories/**",
 					"/api/v1/testimonials", "/api/v1/testimonials/**",
-					"/api/v1/faqs", "/api/v1/faqs/**").permitAll()
+					"/api/v1/faqs").permitAll()
 				.anyRequest().authenticated())
 			.oauth2ResourceServer(resourceServer -> resourceServer
 				.jwt(Customizer.withDefaults())
