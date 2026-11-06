@@ -18,6 +18,11 @@ spring:
 app:
   supabase:
     url: ${SUPABASE_URL}
+    storage:
+      bucket: ${SUPABASE_STORAGE_BUCKET:media}
+      service-role-key: ${SUPABASE_SERVICE_ROLE_KEY}
+      signed-url-ttl: ${SUPABASE_STORAGE_SIGNED_URL_TTL:300s}
+      max-file-size: ${SUPABASE_STORAGE_MAX_FILE_SIZE:5MB}
 management:
   endpoints:
     web:
