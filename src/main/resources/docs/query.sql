@@ -5,6 +5,14 @@ CREATE EXTENSION IF NOT EXISTS citext;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 CREATE EXTENSION IF NOT EXISTS unaccent;
 
+-- Supabase instala las extensiones en el esquema "extensions". Sin esto,
+-- gin_trgm_ops y unaccent no se resuelven y el script falla con 42704/42883.
+SET search_path TO public, extensions;
+
+-- Además hay que dejar el search_path a nivel de base de datos para que la API
+-- (Hikari) pueda usar unaccent(...) en runtime:
+-- ALTER DATABASE postgres SET search_path TO "$user", public, extensions;
+
 DO $$
 BEGIN
     CREATE TYPE admin_role AS ENUM ('owner', 'editor');
@@ -31,11 +39,15 @@ CREATE TABLE IF NOT EXISTS categories (
     name varchar(50) NOT NULL,
     slug varchar(50) NOT NULL,
     description varchar(160) NOT NULL DEFAULT '',
-    active boolean NOT NULL DEFAULT true
+    active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS categories_slug_lower_uidx
     ON categories (lower(slug));
+CREATE INDEX IF NOT EXISTS categories_active_name_idx
+    ON categories (active, name);
 
 CREATE TABLE IF NOT EXISTS products (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -47,7 +59,9 @@ CREATE TABLE IF NOT EXISTS products (
     image_url text NOT NULL,
     image_path text,
     featured boolean NOT NULL DEFAULT false,
-    active boolean NOT NULL DEFAULT true
+    active boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS products_category_id_idx
@@ -55,7 +69,7 @@ CREATE INDEX IF NOT EXISTS products_category_id_idx
 CREATE INDEX IF NOT EXISTS products_active_featured_idx
     ON products (active, featured);
 CREATE INDEX IF NOT EXISTS products_name_trgm_idx
-    ON products USING gin (name gin_trgm_ops);
+    ON products USING gin (name extensions.gin_trgm_ops);
 
 CREATE TABLE IF NOT EXISTS testimonials (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -79,7 +93,8 @@ CREATE INDEX IF NOT EXISTS testimonials_published_created_idx
 CREATE INDEX IF NOT EXISTS testimonials_image_path_idx
     ON testimonials (image_path);
 CREATE INDEX IF NOT EXISTS testimonials_name_trgm_idx
-    ON testimonials USING gin (name gin_trgm_ops);
+    ON testimonials USING gin (name extensions.gin_trgm_ops);
+
 
 CREATE TABLE IF NOT EXISTS faqs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

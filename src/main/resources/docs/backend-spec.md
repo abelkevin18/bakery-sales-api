@@ -65,7 +65,7 @@
 | 401 | `INVALID_CREDENTIALS` | Login fallido (mensaje genérico) |
 | 403 | `FORBIDDEN` | Hay sesión pero el rol no tiene permiso, o el origen/CSRF no coincide |
 | 404 | `NOT_FOUND` | El ID no existe |
-| 409 | `CONFLICT` | Slug duplicado, o categoría con productos asociados |
+| 409 | `CONFLICT` | Categoría con productos asociados |
 | 413 | `PAYLOAD_TOO_LARGE` | La imagen supera 5 MB |
 | 415 | `UNSUPPORTED_MEDIA_TYPE` | El archivo no es JPEG/PNG/WebP |
 | 422 | `VALIDATION_ERROR` | Falla la validación del body (`details` por campo) |
@@ -127,7 +127,7 @@
   "description": "Bizcocho húmedo bañado en tres leches con merengue italiano.",
   "size": "20 porciones",
   "priceFrom": 85.00,
-  "image": "https://cdn.abejitacakes.pe/products/tres-leches-7f3a.webp",
+  "image": "https://<proyecto>.supabase.co/storage/v1/object/public/media/products/8f14e45f-ceea-467f-a9b8-1f2c3d4e5f60.webp",
   "featured": true,
   "active": true,
   "createdAt": "2026-09-01T14:00:00.000Z",
@@ -185,7 +185,7 @@ Devuelve la envoltura de lista con objetos `Product` completos.
   "description": "Bizcocho de chocolate, crema chantilly y cerezas al marrasquino.",
   "size": "15 porciones",
   "priceFrom": 95,
-  "image": "https://cdn.abejitacakes.pe/products/selva-negra-91bc.webp",
+  "image": "https://<proyecto>.supabase.co/storage/v1/object/public/media/products/2b9c7d10-4e5f-4a6b-8c7d-9e0f1a2b3c4d.webp",
   "featured": false,
   "active": true
 }
@@ -218,7 +218,7 @@ Body parcial: cualquier subconjunto de los campos. **200** `{ "data": Product }`
 
 ### 2.3 Categorías
 
-**Objeto `Category`**
+**Objeto `Category` (respuesta admin)**
 
 ```json
 {
@@ -233,61 +233,443 @@ Body parcial: cualquier subconjunto de los campos. **200** `{ "data": Product }`
 }
 ```
 
-| Endpoint | Notas |
-|---|---|
-| `GET /categories` | Solo las activas, ordenadas por `name`. Omite `productCount` y la auditoría |
-| `GET /admin/categories` | `q` (busca en name/slug), `status`, `page`, `pageSize`, `sort` (`name`, `updatedAt`) |
-| `POST /admin/categories` | Si el `slug` ya existe, `409 CONFLICT` con `details.slug` |
-| `PATCH /admin/categories/{id}` | Parcial. Si se desactiva, sus productos dejan de verse en la landing |
-| `DELETE /admin/categories/{id}` | Si tiene productos, `409 CONFLICT` ("Mueve o elimina sus 6 productos primero") |
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | uuid | |
+| `name` | string | 3–50 caracteres |
+| `slug` | string | **Solo lectura.** Lo genera el backend; el front nunca lo envía |
+| `description` | string | `""` si no se envió |
+| `active` | boolean | Si es `false`, la categoría y sus productos desaparecen de la landing |
+| `productCount` | int | Ver la tabla de semántica más abajo |
+| `createdAt` / `updatedAt` | ISO 8601 | Solo en respuestas admin |
 
-**Body (POST)**
+#### ⚠️ El `slug` es inmutable
+
+El `slug` se genera **una sola vez**, al crear la categoría, a partir de `name` (minúsculas, sin acentos, espacios → `-`, máximo 50 caracteres). Después **nunca se recalcula**:
+
+- `POST` ignora cualquier `slug` que venga en el body (aunque lo mandes, se descarta).
+- `PATCH` tampoco lo toca: si cambias `name` de `"Tortas clásicas"` a `"Tortas tradicionales"`, el `slug` **sigue siendo `tortas-clasicas`**.
+- En el formulario de edición, el campo `slug` debe mostrarse como texto de solo lectura (o directamente oculto), con una nota del tipo "el identificador de URL no cambia al renombrar".
+
+Motivo: el `slug` es la clave estable que usan las URLs públicas, los enlaces compartidos en redes y los filtros (`?categoria=tortas-clasicas`). Si se recalculara al renombrar, todos esos enlaces pasarían a 404 y se perdería el posicionamiento en buscadores.
+
+**Si de verdad hay que corregir un `slug`** (por ejemplo, un error de tipeo en el alta), es una operación manual en la base de datos y debe acompañarse de una redirección 301 desde el `slug` anterior hacia el nuevo. No lo expongas como acción de la UI.
+
+#### Semántica de `productCount`
+
+| Endpoint | Qué cuenta |
+|---|---|
+| `GET /categories` (público) | Solo productos **activos** |
+| `GET /admin/categories` y `GET /admin/categories/{id}` | **Todos** los productos de la categoría |
+| `DELETE /admin/categories/{id}` | Todos, para decidir si hay conflicto |
+
+Así la landing nunca muestra "6 productos" para una categoría que solo tiene 2 visibles, y el panel admin no pierde de vista los inactivos.
+
+#### `GET /categories` (público, sin autenticación)
+
+Devuelve solo las categorías con `active = true`, ordenadas por `name` ascendente. **Sin paginación y sin `meta`** (el catálogo tiene pocas categorías y la landing necesita la lista completa para pintar los filtros).
 
 ```json
-{ "name": "Bocaditos salados", "slug": "bocaditos-salados", "description": "Empanaditas, tequeños y causitas.", "active": true }
+{
+  "data": [
+    {
+      "id": "c1a7…",
+      "name": "Tortas clásicas",
+      "slug": "tortas-clasicas",
+      "description": "Nuestros sabores de siempre, para cualquier ocasión.",
+      "active": true,
+      "productCount": 6
+    }
+  ]
+}
+```
+
+> La vista pública **omite `createdAt` y `updatedAt`**: el front no los necesita y no conviene filtrar metadatos internos.
+
+#### `GET /admin/categories`
+
+| Param | Tipo | Default | Regla |
+|---|---|---|---|
+| `status` | string | `all` | `active` \| `inactive` \| `all` |
+| `q` | string | — | 0–100 caracteres. Busca sin distinguir mayúsculas ni acentos en `name` y `slug` |
+| `page` | int | `1` | ≥ 1 |
+| `pageSize` | int | `20` | 1–100 |
+| `sort` | string | `name` | `name` \| `createdAt` \| `updatedAt`. Prefijo `-` para descendente |
+
+`status` es `all` por defecto (igual que en testimonios y FAQs): el panel admin debe ver también las categorías desactivadas. `sort` por defecto es `name` porque es el orden natural del catálogo.
+
+```http
+GET /api/v1/admin/categories?status=active&q=tortas&page=1&pageSize=20&sort=-updatedAt
+```
+
+```json
+{
+  "data": [ { "id": "c1a7…", "name": "Tortas clásicas", "slug": "tortas-clasicas", "description": "…", "active": true, "productCount": 6, "createdAt": "2026-09-01T14:00:00.000Z", "updatedAt": "2026-09-20T09:12:00.000Z" } ],
+  "meta": { "page": 1, "pageSize": 20, "total": 1, "totalPages": 1 }
+}
+```
+
+Un `status` o `sort` fuera de la lista devuelve `400 BAD_REQUEST`.
+
+#### `GET /admin/categories/{id}`
+
+```json
+{ "data": { "id": "c1a7…", "name": "Tortas clásicas", "slug": "tortas-clasicas", "description": "…", "active": true, "productCount": 6, "createdAt": "…", "updatedAt": "…" } }
+```
+
+Si el ID no existe: `404 NOT_FOUND`. Si el ID no es un UUID válido: `400 BAD_REQUEST`.
+
+#### `POST /admin/categories`
+
+```http
+POST /api/v1/admin/categories
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "name": "Bocaditos salados",
+  "description": "Empanaditas, tequeños y causitas.",
+  "active": true
+}
 ```
 
 | Campo | Req. | Regla |
 |---|---|---|
-| `name` | Sí | trim, 3–50 caracteres |
-| `slug` | Sí | 2–50 caracteres, `^[a-z0-9]+(?:-[a-z0-9]+)*$`, único (sin distinguir mayúsculas) |
+| `name` | Sí | trim, 3–50 caracteres. Es la base del `slug` |
 | `description` | No | trim, 0–160 caracteres, default `""` |
-| `active` | Sí | boolean |
+| `active` | Sí | boolean (`null` u omitido → `422`) |
+| `slug` | — | **No se envía.** Si llega, se ignora |
+
+**Respuesta `201 Created`** con header `Location: /api/v1/admin/categories/{id}` y el objeto `Category` en `data`.
+
+**`422 VALIDATION_ERROR`** cuando falta `name` o `active`:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Revisa los campos marcados.",
+    "details": {
+      "name": ["Debe tener entre 3 y 50 caracteres."],
+      "active": ["active es obligatorio."]
+    },
+    "requestId": "req_01JBX4M8Q2"
+  }
+}
+```
+
+**Colisiones de `slug`**: no son un error. Si `"Tortas clásicas"` ya existe con `tortas-clasicas`, la nueva categoría recibe `tortas-clasicas-2` (y así sucesivamente) y el `201` es normal. El front **debe usar el `slug` que devuelve la API**, no el que calcularía a partir del nombre.
+
+Solo si se agotan los 50 intentos (caso irreal) se devuelve `409 CONFLICT` con `details.slug`.
+
+#### `PATCH /admin/categories/{id}`
+
+Parcial: solo se aplican los campos presentes.
+
+| Campo | Req. | Regla |
+|---|---|---|
+| `name` | No | trim, 3–50 caracteres. **No cambia el `slug`** |
+| `description` | No | trim, 0–160 caracteres. `""` la vacía |
+| `active` | No | boolean. `false` la oculta de la landing junto con sus productos |
+| `slug` | — | **No se acepta.** Se ignora si llega |
+
+```http
+PATCH /api/v1/admin/categories/c1a7…
+Content-Type: application/json
+
+{ "active": false }
+```
+
+- Body vacío (`{}`) o con todos los campos en `null` → `422 VALIDATION_ERROR` con `details.body`.
+- Body ausente o JSON mal formado → `400 BAD_REQUEST`.
+- ID inexistente → `404 NOT_FOUND`.
+
+Devuelve `200` con el objeto `Category` actualizado.
+
+> Desactivar una categoría **no** desactiva sus productos en la base de datos: siguen con `active = true`, pero la landing los oculta porque la categoría no se muestra. Es intencional, para que reactivarla restaure el catálogo tal cual estaba.
+
+#### `DELETE /admin/categories/{id}`
+
+- Sin productos asociados → `204 No Content`.
+- Con productos → `409 CONFLICT`. La categoría **no** se borra (`ON DELETE RESTRICT`) y el mensaje indica cuántos productos hay que mover o eliminar primero:
+
+```json
+{
+  "error": {
+    "code": "CONFLICT",
+    "message": "La categoría tiene productos asociados.",
+    "details": {
+      "products": ["Mueve o elimina sus 6 productos primero."]
+    },
+    "requestId": "req_01JBX4M8Q2"
+  }
+}
+```
+
+El conteo del conflicto incluye productos activos e inactivos. ID inexistente → `404 NOT_FOUND`.
+
+#### Errores propios de categorías
+
+| HTTP | `code` | Cuándo |
+|---|---|---|
+| 400 | `BAD_REQUEST` | `status`/`sort` inválido, `page`/`pageSize` fuera de rango, `q` > 100 caracteres, UUID mal formado, body ausente |
+| 404 | `NOT_FOUND` | El ID no existe |
+| 409 | `CONFLICT` | Eliminar una categoría con productos |
+| 422 | `VALIDATION_ERROR` | Falla la validación del body (`details` por campo) |
+
+#### Integración TypeScript
+
+```ts
+export type Category = {
+  id: string;
+  name: string;
+  slug: string;          // solo lectura, generado por el backend
+  description: string;
+  active: boolean;
+  productCount: number;  // activos en público, total en admin
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PublicCategory = Omit<Category, "createdAt" | "updatedAt">;
+
+// El slug NO forma parte del payload de escritura.
+export type CategoryInput = {
+  name: string;
+  description?: string;
+  active: boolean;
+};
+
+export async function listCategories(): Promise<PublicCategory[]> {
+  const res = await fetch(`${API_BASE}/categories`);
+  const body = await res.json();
+  return body.data;
+}
+
+export async function listAdminCategories(params: {
+  status?: "active" | "inactive" | "all";
+  q?: string;
+  page?: number;
+  pageSize?: number;
+  sort?: "name" | "createdAt" | "updatedAt" | `-${string}`;
+}) {
+  const search = new URLSearchParams();
+  if (params.status) search.set("status", params.status);
+  if (params.q) search.set("q", params.q);
+  if (params.page) search.set("page", String(params.page));
+  if (params.pageSize) search.set("pageSize", String(params.pageSize));
+  if (params.sort) search.set("sort", params.sort);
+
+  const res = await fetch(`${API_BASE}/admin/categories?${search}`, { credentials: "include" });
+  return res.json() as Promise<{ data: Category[]; meta: PageMeta }>;
+}
+
+// El 409 de DELETE trae details.products: úsalo para el mensaje del modal.
+```
 
 ---
 
 ### 2.4 Testimonios
 
-**Objeto `Testimonial`**
+**Objeto `Testimonial` (respuesta)**
 
 ```json
 {
-  "id": "t9e2…",
+  "id": "a9e20000-0000-4000-8000-000000000001",
   "name": "Lucía Pérez",
   "occasion": "Cumpleaños de mi hija",
   "rating": 5,
   "text": "La torta llegó perfecta y el sabor encantó a todos. ¡Ya estoy pidiendo la próxima!",
-  "image": "https://cdn.abejitacakes.pe/testimonials/lucia-2b7c.webp",
+  "image": "https://<proyecto>.supabase.co/storage/v1/object/public/media/testimonials/c59b8dc6-77ca-477c-ba48-eb9f54e1919f.jpg",
   "published": true,
   "createdAt": "2026-10-02T12:00:00.000Z",
   "updatedAt": "2026-10-02T12:00:00.000Z"
 }
 ```
 
-| Endpoint | Notas |
-|---|---|
-| `GET /testimonials` | Solo `published = true`, orden `-createdAt`, `limit` (default 6, máximo 20) |
-| `GET /admin/testimonials` | `q` (busca en name/occasion/text), `status` = `published` \| `draft` \| `all`, `rating` (1–5), paginación, `sort` (`createdAt`, `rating`, `name`) |
-| `POST` / `PATCH` / `DELETE` | Igual que productos |
+| Campo | Tipo | Notas |
+|---|---|---|
+| `id` | uuid | Solo lectura |
+| `name` | string | 3–60 |
+| `occasion` | string | 3–60 |
+| `rating` | number | entero 1–5 |
+| `text` | string | 20–400, texto plano |
+| `image` | string \| `null` | `publicUrl` exacta devuelta por `/admin/uploads/sign`, o `null` |
+| `published` | boolean | `false` = borrador (no aparece en la landing) |
+| `createdAt` / `updatedAt` | ISO 8601 | Solo lectura |
+
+> `image_path` **nunca** se envía ni se recibe en la API: el backend lo deriva del `publicUrl` y lo guarda en la columna `image_path` para poder borrar el objeto del storage cuando deja de usarse.
+
+---
+
+#### `GET /api/v1/testimonials` (público)
+
+Sin autenticación. Devuelve solo `published = true`, orden `createdAt DESC`.
+
+| Query param | Tipo | Default | Regla |
+|---|---|---|---|
+| `limit` | int | `6` | 1–20. Fuera de rango → `400 BAD_REQUEST` |
+
+**200**
+
+```json
+{ "data": [ /* Testimonial, … */ ] }
+```
+
+Sin resultados → `{ "data": [] }` (200, no 404). No incluye `meta`: la landing solo necesita el arreglo.
+
+---
+
+#### `GET /api/v1/admin/testimonials` (admin)
+
+| Query param | Tipo | Default | Regla |
+|---|---|---|---|
+| `status` | string | `all` | `published` \| `draft` \| `all`. Otro valor → `400` |
+| `q` | string | — | 0–100 caracteres. Busca en `name`, `occasion` y `text` sin distinguir mayúsculas ni acentos |
+| `rating` | int | — | 1–5. Fuera de rango → `400` |
+| `page` | int | `1` | ≥ 1 |
+| `pageSize` | int | `20` | 1–100 |
+| `sort` | string | `-createdAt` | `createdAt`, `rating` o `name`. Prefijo `-` = descendente. Campo no permitido → `400` |
+
+**200**
+
+```json
+{
+  "data": [ /* Testimonial, … */ ],
+  "meta": { "page": 1, "pageSize": 20, "total": 37, "totalPages": 2 }
+}
+```
+
+---
+
+#### `GET /api/v1/admin/testimonials/{id}` (admin)
+
+**200** `{ "data": Testimonial }` · **404** `NOT_FOUND` si no existe · **400** si `{id}` no es un UUID válido.
+
+---
+
+#### `POST /api/v1/admin/testimonials` (admin)
+
+```json
+{
+  "name": "Rosario Quispe",
+  "occasion": "Cumpleaños de mi hija",
+  "rating": 5,
+  "text": "La torta de abejita quedó idéntica a la foto que les mandé. Mi hija no quería que la cortáramos. Además, ¡estaba deliciosa!",
+  "image": null,
+  "published": false
+}
+```
 
 | Campo | Req. | Regla |
 |---|---|---|
 | `name` | Sí | trim, 3–60 caracteres |
 | `occasion` | Sí | trim, 3–60 caracteres |
 | `rating` | Sí | entero 1–5 |
-| `text` | Sí | trim, 20–400 caracteres. Se guarda como texto plano (sin HTML) |
-| `image` | No | `null` o `publicUrl` del bucket (misma regla que en productos). Si es `null`, la UI muestra la inicial del nombre |
-| `published` | Sí | boolean |
+| `text` | Sí | trim, 20–400 caracteres, texto plano |
+| `image` | No | `null`, ausente, o `publicUrl` exacta del bucket. Cualquier otra URL → `422` en `details.image` |
+| `published` | **Sí** | boolean. Si se omite → `422` en `details.published` |
+
+- El `id` lo genera el servidor; si se envía en el body se ignora.
+- `image` es opcional: sin foto, la UI muestra la inicial del nombre.
+
+**201 Created** + `Location: /api/v1/admin/testimonials/{id}`
+
+```json
+{ "data": Testimonial }
+```
+
+**422** con `details` por campo:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Revisa los campos marcados.",
+    "details": {
+      "name": ["Debe tener entre 3 y 60 caracteres."],
+      "text": ["Debe tener entre 20 y 400 caracteres."],
+      "image": ["La imagen debe ser la URL pública devuelta por /admin/uploads/sign o null."]
+    },
+    "requestId": "req_9c1f…"
+  }
+}
+```
+
+---
+
+#### `PATCH /api/v1/admin/testimonials/{id}` (admin)
+
+Actualización parcial: **solo se modifican los campos presentes**. Debe enviarse al menos uno; si el body llega vacío → `422` en `details.body`.
+
+```json
+{ "rating": 4, "published": true }
+```
+
+**`image` tiene tres estados** — es la parte que más cuidado requiere en el front:
+
+| Body | Efecto |
+|---|---|
+| `image` **ausente** | Conserva la imagen actual |
+| `"image": null` | Elimina la imagen (el objeto se borra del bucket si nadie más lo usa) |
+| `"image": "https://…/media/testimonials/x.webp"` | Reemplaza la imagen (el objeto anterior se borra si nadie más lo usa) |
+
+⚠️ Enviar `"image": ""` (string vacío) **no** limpia la imagen: se interpreta como ausente. Para limpiar hay que enviar `null` explícito. En JS, si el campo se arma desde un formulario, omitir la clave cuando no cambió y usar `null` cuando el usuario quitó la foto.
+
+**200** `{ "data": Testimonial }` · **404** si el ID no existe · **422** si un campo presente es inválido.
+
+---
+
+#### `DELETE /api/v1/admin/testimonials/{id}` (admin)
+
+**204 No Content**. La imagen asociada se borra del bucket (best-effort, después del commit). **404** si el ID no existe.
+
+---
+
+#### Errores de testimonios
+
+| HTTP | `code` | Cuándo |
+|---|---|---|
+| 400 | `BAD_REQUEST` | `limit`, `status`, `rating`, `page`, `pageSize` o `sort` inválidos; `{id}` no es UUID; JSON mal formado |
+| 401 | `UNAUTHENTICATED` | Falta el JWT o expiró (solo rutas `/admin/**`) |
+| 404 | `NOT_FOUND` | El testimonio no existe |
+| 422 | `VALIDATION_ERROR` | Body inválido, `image` con URL ajena al bucket, o PATCH sin campos |
+| 500 | `INTERNAL_ERROR` | Error inesperado |
+
+#### Ejemplo de integración (TypeScript)
+
+```ts
+const API = process.env.NEXT_PUBLIC_API_BASE_URL; // "" si es mismo origen
+
+// Landing: solo publicados, sin token
+const { data: testimonials } = await fetch(`${API}/api/v1/testimonials?limit=6`)
+  .then((r) => r.json());
+
+// Admin: crear (image es opcional)
+await fetch(`${API}/api/v1/admin/testimonials`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+  body: JSON.stringify({
+    name, occasion, rating, text,
+    image: uploadedPublicUrl ?? null, // o omitir la clave
+    published,
+  }),
+});
+
+// Admin: PATCH — solo las claves que cambiaron
+const body: Record<string, unknown> = {};
+if (nameChanged) body.name = name;
+if (imageRemoved) body.image = null;            // limpia la foto
+else if (newUpload) body.image = newUpload;     // reemplaza la foto
+// si la foto no cambió: NO incluir la clave "image"
+await fetch(`${API}/api/v1/admin/testimonials/${id}`, {
+  method: "PATCH",
+  headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+  body: JSON.stringify(body),
+});
+```
+
+Con `image === null` la UI debe mostrar la inicial de `name` en lugar de una foto rota.
 
 ---
 
@@ -375,7 +757,7 @@ Admin (Next.js)                    API (Spring Boot)              Supabase Stora
 ```
 
 - `path` lo genera el backend (`{folder}/{uuid}.{ext}`): el cliente nunca propone el nombre.
-- `uploadUrl` es la URL firmada de subida. Es de un solo uso y expira en `expiresIn` segundos (default 300).
+- `uploadUrl` es la URL firmada de subida. Es válida hasta que expira (`expiresIn` segundos, default 300) y sirve para **una sola** subida: una vez creado el objeto, un segundo `PUT` a la misma ruta falla porque el objeto ya existe. Si la subida falla, se pide una firma nueva.
 - El cliente sube con `PUT <uploadUrl>` y el archivo como cuerpo binario. Debe enviar `Content-Type` con el mismo valor usado en la firma. No se permiten reintentos con la misma URL: si falla, se pide otra firma.
 - `publicUrl` es la URL definitiva (bucket público). Se guarda en `image` y, junto con `path`, en `image_path`.
 
@@ -390,6 +772,20 @@ Admin (Next.js)                    API (Spring Boot)              Supabase Stora
 También acepta `?path=...` para clientes que no envían body en `DELETE`.
 
 **204**. Si algún registro usa esa imagen (`products.image_path` o `testimonials.image_path`), `409 CONFLICT`. Borrar un objeto inexistente es idempotente (`204`). `path` debe respetar `^(products|testimonials)/[a-z0-9-]+\.(jpg|jpeg|png|webp)$`; si no, `422`.
+
+## 2.7 NOTAS
+#### 2.7.1 Limpieza automática de imágenes huérfanas
+
+El front **no** necesita borrar imágenes al editar o eliminar registros: el backend ya lo hace.
+
+| Acción | Qué borra el backend |
+|---|---|
+| `PATCH` con `image` distinto (reemplazo) | El objeto anterior, tras el commit y solo si ningún registro lo referencia |
+| `PATCH` con `"image": null` | El objeto anterior, con la misma regla |
+| `PATCH` con `image` ausente | Nada |
+| `DELETE` del registro | Su imagen, tras el commit |
+
+Es *best-effort*: si Supabase Storage falla, la operación de negocio se confirma igual y el objeto queda como huérfano (se registra un `WARN`). Esos casos se limpian a mano con `DELETE /api/v1/admin/uploads`. `DELETE /admin/uploads` sigue siendo útil para descartar una imagen subida que nunca se asoció a ningún registro.
 
 #### Configuración de Supabase Storage
 
@@ -434,9 +830,10 @@ El backend llama a `POST /storage/v1/object/upload/sign/{bucket}/{path}` y `DELE
 
 ```text
 categories 1 ──── N products
-admin_users 1 ──── N (created_by / updated_by en todas las tablas)
 testimonials, faqs: independientes
 ```
+
+Todas las tablas de contenido llevan `created_at` y `updated_at` (`timestamptz`, default `now()`); `updated_at` se refresca en cada `PATCH` desde el backend.
 
 ### `categories`
 
@@ -444,9 +841,12 @@ testimonials, faqs: independientes
 |---|---|---|---|
 | `id` | uuid PK | Sí | `gen_random_uuid()` |
 | `name` | varchar(50) | Sí | |
-| `slug` | varchar(50) | Sí | `UNIQUE (lower(slug))` |
+| `slug` | varchar(50) | Sí | `UNIQUE (lower(slug))`. Lo genera el backend al crear y **no se recalcula nunca** |
 | `description` | varchar(160) | No | default `''` |
 | `active` | boolean | Sí | default `true` |
+| `created_at` | timestamptz | Sí | default `now()` |
+| `updated_at` | timestamptz | Sí | default `now()`, se actualiza en cada `PATCH` |
+| Índices | | | `UNIQUE (lower(slug))`, `(active, name)` |
 
 ### `products`
 
@@ -462,6 +862,8 @@ testimonials, faqs: independientes
 | `image_path` | text | No | Clave en el storage, para poder borrarla |
 | `featured` | boolean | Sí | default `false` |
 | `active` | boolean | Sí | default `true` |
+| `created_at` | timestamptz | Sí | default `now()` |
+| `updated_at` | timestamptz | Sí | default `now()`, se actualiza en cada `PATCH` |
 | Índices | | | `(category_id)`, `(active, featured)`, índice trigram en `name` |
 
 ### `testimonials`
@@ -473,9 +875,12 @@ testimonials, faqs: independientes
 | `occasion` | varchar(60) | Sí | |
 | `rating` | smallint | Sí | `CHECK (rating BETWEEN 1 AND 5)` |
 | `text` | varchar(400) | Sí | |
-| `image_url` | text | No | |
-| `image_path` | text | No | |
+| `image_url` | text | No | URL pública del bucket |
+| `image_path` | text | No | Clave del objeto en el storage. La deriva el backend; índice para la verificación de uso |
 | `published` | boolean | Sí | default `false` |
+| `created_at` | timestamptz | Sí | default `now()` |
+| `updated_at` | timestamptz | Sí | default `now()`, se actualiza en cada `PATCH` |
+| Índices | | | `(published, created_at DESC, id DESC)`, `(image_path)`, trigram en `name` |
 
 ### `faqs`
 
@@ -486,6 +891,8 @@ testimonials, faqs: independientes
 | `answer` | varchar(600) | Sí | |
 | `sort_order` | smallint | Sí | `CHECK (sort_order BETWEEN 1 AND 999)`. Se expone como `order` |
 | `published` | boolean | Sí | default `true` |
+| `created_at` | timestamptz | Sí | default `now()` |
+| `updated_at` | timestamptz | Sí | default `now()`, se actualiza en cada `PATCH` |
 
 
 ### Estados
