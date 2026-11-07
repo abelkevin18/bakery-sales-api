@@ -116,7 +116,7 @@
 
 ### 2.1 Productos
 
-**Objeto `Product` (respuesta)**
+**Objeto `Product` (respuesta admin)**
 
 ```json
 {
@@ -135,84 +135,238 @@
 }
 ```
 
-#### `GET /api/v1/products` (público)
+`category` viene resuelto por el backend en la misma consulta: el front **nunca** lo envía ni lo necesita para filtrar (para eso está `categoryId`).
 
-Devuelve solo productos con `active = true` cuya categoría también está activa. No pagina (el catálogo es chico); se cachea con el tag `products`.
+#### `GET /products` (público, sin autenticación)
+
+Devuelve solo productos con `active = true` **cuya categoría también está activa**. Sin paginación (el catálogo es chico) y sin `meta`. Orden fijo: destacados primero, luego por nombre ascendente.
 
 | Query | Tipo | Descripción |
 |---|---|---|
 | `category` | slug | Filtra por el slug de la categoría |
-| `featured` | `true` | Solo los destacados |
+| `featured` | boolean | `true` solo destacados, `false` solo no destacados. Omitido = todos |
 
 ```json
 {
   "data": [
     {
-      "id": "…",
+      "id": "3f6a2b1e-…",
       "name": "Torta Tres Leches",
       "category": { "slug": "tortas-clasicas", "name": "Tortas clásicas" },
-      "description": "…",
+      "description": "Bizcocho húmedo bañado en tres leches con merengue italiano.",
       "size": "20 porciones",
-      "priceFrom": 85,
-      "image": "…",
+      "priceFrom": 85.00,
+      "image": "https://<proyecto>.supabase.co/storage/v1/object/public/media/products/…webp",
       "featured": true
     }
   ]
 }
 ```
 
-La vista pública **omite** `active`, `createdAt` y `updatedAt`.
+La vista pública **omite** `active`, `createdAt`, `updatedAt`, `categoryId` y `category.id`. Basta `category.slug` como clave de filtro y `category.name` para pintar la etiqueta.
 
-#### `GET /api/v1/admin/products`
+Si `category` apunta a un slug inexistente o a una categoría inactiva, la respuesta es `{ "data": [] }` (no `404`).
+
+#### `GET /products/{id}`
+
+`{ "data": Product }` con la **misma forma pública** que la lista (sin `active`, `createdAt`, `updatedAt`, `categoryId` ni `category.id`).
+
+Devuelve `404 NOT_FOUND` tanto si el ID no existe como si el producto o su categoría están inactivos: para la landing un producto oculto es indistinguible de uno inexistente. `400 BAD_REQUEST` si no es un UUID válido.
+
+#### `GET /admin/products`
 
 | Query | Tipo | Default | Descripción |
 |---|---|---|---|
-| `q` | string | — | Busca en `name` y `description` |
-| `categoryId` | uuid | — | Filtro de categoría (el select de la tabla) |
 | `status` | `active` \| `inactive` \| `all` | `all` | Filtro de estado |
-| `featured` | `true` \| `false` | — | |
-| `page`, `pageSize` | int | 1, 20 | |
-| `sort` | `name`, `priceFrom`, `updatedAt`, `createdAt` | `-updatedAt` | |
+| `q` | string | — | 0–100 caracteres. Busca sin distinguir mayúsculas ni acentos en `name` y `description` |
+| `categoryId` | uuid | — | Filtro del select de categoría |
+| `featured` | boolean | — | `true` / `false` |
+| `page` | int | `1` | ≥ 1 |
+| `pageSize` | int | `20` | 1–100 |
+| `sort` | `name` \| `priceFrom` \| `updatedAt` \| `createdAt` | `-updatedAt` | Prefijo `-` para descendente |
 
-Devuelve la envoltura de lista con objetos `Product` completos.
+```http
+GET /api/v1/admin/products?status=active&categoryId=c1a7…&page=1&pageSize=20&sort=name
+```
 
-#### `POST /api/v1/admin/products`
+Devuelve la envoltura de lista (`data` + `meta`) con objetos `Product` completos.
 
-```json
+#### `GET /admin/products/{id}`
+
+`{ "data": Product }`. `404 NOT_FOUND` si el ID no existe, `400 BAD_REQUEST` si no es un UUID válido.
+
+#### `POST /admin/products`
+
+```http
+POST /api/v1/admin/products
+Authorization: Bearer <token>
+Content-Type: application/json
+
 {
   "name": "Torta Selva Negra",
   "categoryId": "c1a7…",
   "description": "Bizcocho de chocolate, crema chantilly y cerezas al marrasquino.",
   "size": "15 porciones",
   "priceFrom": 95,
-  "image": "https://<proyecto>.supabase.co/storage/v1/object/public/media/products/2b9c7d10-4e5f-4a6b-8c7d-9e0f1a2b3c4d.webp",
+  "image": "https://<proyecto>.supabase.co/storage/v1/object/public/media/products/2b9c7d10-….webp",
   "featured": false,
   "active": true
 }
 ```
 
-**201 Created** + header `Location`, `{ "data": Product }`
+**`201 Created`** + header `Location: /api/v1/admin/products/{id}` y `{ "data": Product }`.
 
-#### `PATCH /api/v1/admin/products/{id}`
+**Todos los campos son obligatorios**, incluidos `featured` y `active` (no hay defaults implícitos: lo que la UI muestre debe viajar en el body).
 
-Body parcial: cualquier subconjunto de los campos. **200** `{ "data": Product }`. Si el producto no existe, `404`.
+**`422 VALIDATION_ERROR`** con `details` por campo:
 
-#### `DELETE /api/v1/admin/products/{id}`
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Revisa los campos marcados.",
+    "details": {
+      "name": ["Debe tener entre 3 y 80 caracteres."],
+      "categoryId": ["La categoría seleccionada no existe."],
+      "image": ["La imagen debe ser la URL pública devuelta por /admin/uploads/sign."]
+    },
+    "requestId": "req_01JBX4M8Q2"
+  }
+}
+```
 
-**204**. Si la imagen está en el storage propio, se borra en segundo plano.
+`categoryId` debe existir, pero **puede ser una categoría inactiva**: el admin puede preparar el producto y activar la categoría después. En la landing no se verá hasta que la categoría esté activa.
 
-**Validaciones**
+#### `PATCH /admin/products/{id}`
 
-| Campo | Tipo | Req. | Regla |
+Parcial: solo se aplican los campos presentes.
+
+| Campo | Regla |
+|---|---|
+| `name` | trim, 3–80 |
+| `categoryId` | Debe existir |
+| `description` | trim, 10–240 |
+| `size` | trim, 2–60 |
+| `priceFrom` | > 0, ≤ 10000, máximo 2 decimales |
+| `image` | Ver tabla siguiente |
+| `featured` | boolean |
+| `active` | boolean |
+
+**Tri-estado de `image` en el PATCH**
+
+| Body | Efecto |
+|---|---|
+| `image` ausente | La imagen actual no cambia |
+| `"image": "https://…/public/media/products/nueva.webp"` | Se reemplaza; la anterior se borra del storage tras el commit |
+| `"image": null` | **`422`**: un producto no puede quedarse sin imagen (`image_url` es `NOT NULL`) |
+| `"image": ""` | Se trata como ausente |
+
+- Body vacío (`{}`) o con todos los campos en `null` → `422 VALIDATION_ERROR` con `details.body`.
+- Body ausente o JSON mal formado → `400 BAD_REQUEST`.
+- Producto inexistente → `404 NOT_FOUND`.
+
+Devuelve `200` con el `Product` actualizado.
+
+#### `DELETE /admin/products/{id}`
+
+`204 No Content`. La imagen asociada se borra del storage **después del commit** (best-effort: si el borrado falla solo se registra un `WARN`). `404 NOT_FOUND` si el ID no existe.
+
+#### Validaciones
+
+| Campo | Tipo | Req. POST | Regla |
 |---|---|---|---|
 | `name` | string | Sí | trim, 3–80 caracteres |
 | `categoryId` | uuid | Sí | Debe existir. Si no existe, `422` en `categoryId` |
 | `description` | string | Sí | trim, 10–240 caracteres |
 | `size` | string | Sí | trim, 2–60 caracteres |
 | `priceFrom` | number | Sí | > 0, ≤ 10000, máximo 2 decimales |
-| `image` | string | Sí | URL `https://` de `publicUrl` devuelta por `POST /admin/uploads/sign` (bucket público). Debe empezar con `{SUPABASE_URL}/storage/v1/object/public/{bucket}/` |
-| `featured` | boolean | Sí | Default `false` |
-| `active` | boolean | Sí | Default `true` |
+| `image` | string | Sí | URL `https://` de `publicUrl` devuelta por `POST /admin/uploads/sign`. Debe empezar con `{SUPABASE_URL}/storage/v1/object/public/{bucket}/`; el backend deriva `image_path` de ahí |
+| `featured` | boolean | Sí | Sin default implícito |
+| `active` | boolean | Sí | Sin default implícito |
+
+#### Errores propios de productos
+
+| HTTP | `code` | Cuándo |
+|---|---|---|
+| 400 | `BAD_REQUEST` | `status`/`sort` inválido, `page`/`pageSize` fuera de rango, `q` > 100 caracteres, UUID mal formado, body ausente |
+| 404 | `NOT_FOUND` | El ID no existe |
+| 422 | `VALIDATION_ERROR` | Falla la validación del body (`details` por campo) |
+
+#### Integración TypeScript
+
+```ts
+export type CategoryRef = { id: string; name: string; slug: string };
+
+export type Product = {
+  id: string;
+  name: string;
+  categoryId: string;
+  category: CategoryRef;
+  description: string;
+  size: string;
+  priceFrom: number;
+  image: string;
+  featured: boolean;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PublicProduct = {
+  id: string;
+  name: string;
+  category: { slug: string; name: string };
+  description: string;
+  size: string;
+  priceFrom: number;
+  image: string;
+  featured: boolean;
+};
+
+// Todos los campos son obligatorios en el POST.
+export type ProductInput = {
+  name: string;
+  categoryId: string;
+  description: string;
+  size: string;
+  priceFrom: number;
+  image: string;
+  featured: boolean;
+  active: boolean;
+};
+
+export async function listProducts(params: {
+  category?: string;
+  featured?: boolean;
+} = {}): Promise<PublicProduct[]> {
+  const search = new URLSearchParams();
+  if (params.category) search.set("category", params.category);
+  if (params.featured !== undefined) search.set("featured", String(params.featured));
+
+  const res = await fetch(`${API_BASE}/products?${search}`);
+  return (await res.json()).data;
+}
+
+export async function listAdminProducts(params: {
+  status?: "active" | "inactive" | "all";
+  q?: string;
+  categoryId?: string;
+  featured?: boolean;
+  page?: number;
+  pageSize?: number;
+  sort?: "name" | "priceFrom" | "createdAt" | "updatedAt" | `-${string}`;
+}) {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value !== undefined && value !== "") search.set(key, String(value));
+  });
+
+  const res = await fetch(`${API_BASE}/admin/products?${search}`, { credentials: "include" });
+  return res.json() as Promise<{ data: Product[]; meta: PageMeta }>;
+}
+
+// PATCH: para reemplazar la imagen manda la nueva URL; NUNCA envíes null (422).
+```
 
 ---
 
